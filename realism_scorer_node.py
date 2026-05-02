@@ -285,6 +285,18 @@ class RealismScoreNode:
     FUNCTION    = "score"
     CATEGORY    = "image/analysis"
 
+    def _score_texture(self, lap_var):
+        # Real photos tend to be softer (low lap_var), AI often hyper-sharp (high lap_var)
+        v = np.log10(max(lap_var, 1.0))
+        # Map log10(lap_var): 0.5 (very soft) → 1.0,  3.5 (very sharp) → 0.0
+        return float(np.clip(1.0 - (v - 0.5) / 3.0, 0.0, 1.0))
+
+    def _score_noise(self, residual_std):
+        # Real photos: mild noise (~0.5–3.0). AI: often structured detail that looks like noise (~10+)
+        v = np.log10(max(residual_std, 0.1))
+        # Map log10(std): -0.3 (clean) → 1.0,  1.3 (noisy/structured) → 0.0
+        return float(np.clip(1.0 - (v + 0.3) / 1.6, 0.0, 1.0))
+
     def score(self, image: torch.Tensor):
         image_np  = (image[0].cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
         image_pil = Image.fromarray(image_np, mode="RGB")
@@ -296,14 +308,16 @@ class RealismScoreNode:
         # Target ~80 (mid sharpness), sigma 120 (wide tolerance)
         sharpness = _laplacian_variance(image_np)
         #texture   = _gaussian(sharpness, target=80.0, sigma=120.0)
-        texture   = _gaussian(sharpness, target=80.0, sigma=1500.0)
+        #texture   = _gaussian(sharpness, target=80.0, sigma=1500.0)
+        texture = self._score_texture(sharpness)
 
         # Noise: calibrated to observed residual_std range 0.5-4.0
         # Target ~2.0 (mild natural noise), sigma 1.5
         noise_std   = _estimate_noise(image_np)
         #noise_score = _gaussian(noise_std, target=2.0, sigma=1.5)
-        noise_score = _gaussian(noise_std, target=2.0, sigma=10.0)
-
+        #noise_score = _gaussian(noise_std, target=2.0, sigma=10.0)
+        noise_score = self._score_noise(noise_std)
+        
         final = float(np.clip(
             0.45 * realism
             + 0.35 * aesthetic
